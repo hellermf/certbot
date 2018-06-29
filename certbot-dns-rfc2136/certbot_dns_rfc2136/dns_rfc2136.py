@@ -109,6 +109,39 @@ class _RFC2136Client(object):
         :raises certbot.errors.PluginError: if an error occurs communicating with the DNS server
         """
 
+        # If there is any CNAME involved we want to perform the dynamic update of
+        # the TXT RR using the zone the CNAME points to
+        # Don't let any failure in this section stop us, this is optional
+        logger.info("Checking if %s is a CNAME...", record_name)
+        q = dns.message.make_query(record_name, dns.rdatatype.TXT, dns.rdataclass.IN)
+        try:
+            response = dns.query.tcp(q, self.server, port=self.port)
+        except Exception as e:
+            logger.info("Exception %s during CNAME query, trying to continue asssuming no CNAME",
+                        str(type(e)))
+        try:
+            rcode = response.rcode()
+            if rcode == dns.rcode.NOERROR or rcode == dns.rcode.NXDOMAIN:
+                cname = None
+                for answer in response.answer:
+                    if (answer.rdtype != dns.rdatatype.CNAME
+                        or answer.rdclass != dns.rdataclass.IN):
+                        continue
+                    cname = answer.items[0].target.to_text()
+                if cname is not None:
+                    logger.info("... %s -> %s", record_name, cname)
+                    record_name = cname
+                else:
+                    logger.info("... not a CNAME")
+            else:
+                logger.info("CNAME query returned %s, continuing assuming no CNAME",
+                            dns.rcode.to_text(rcode))
+        except Exception as e:
+            logger.info("Exception %s parsing CNAME check, continuing asssuming no CNAME",
+                        str(type(e)))
+            logger.info('debug: {0}'.format(e))
+
+
         domain = self._find_domain(record_name)
 
         n = dns.name.from_text(record_name)
@@ -143,6 +176,35 @@ class _RFC2136Client(object):
         :param int record_ttl: The record TTL (number of seconds that the record may be cached).
         :raises certbot.errors.PluginError: if an error occurs communicating with the DNS server
         """
+        # If there is any CNAME involved we want to perform the dynamic update of
+        # the TXT RR using the zone the CNAME points to
+        # Don't let any failure in this section stop us, this is optional
+        q = dns.message.make_query(record_name, dns.rdatatype.TXT, dns.rdataclass.IN)
+        try:
+            response = dns.query.tcp(q, self.server, port=self.port)
+        except Exception as e:
+            logger.info("Exception %s during CNAME query, trying to continue asssuming no CNAME",
+                        str(type(e)))
+        try:
+            rcode = response.rcode()
+            if rcode == dns.rcode.NOERROR or rcode == dns.rcode.NXDOMAIN:
+                cname = None
+                for answer in response.answer:
+                    if (answer.rdtype != dns.rdatatype.CNAME
+                        or answer.rdclass != dns.rdataclass.IN):
+                        continue
+                    cname = answer.items[0].target.to_text()
+                if cname is not None:
+                    record_name = cname
+                else:
+                    pass
+            else:
+                logger.info("CNAME query returned %s, continuing assuming no CNAME",
+                            dns.rcode.to_text(rcode))
+        except Exception as e:
+            logger.info("Exception %s parsing CNAME check, continuing asssuming no CNAME",
+                        str(type(e)))
+            logger.info('debug: {0}'.format(e))
 
         domain = self._find_domain(record_name)
 
