@@ -10,6 +10,7 @@ import dns.rdatatype
 import dns.tsig
 import dns.tsigkeyring
 import dns.update
+import dns.resolver # just needed for cname_check2
 import zope.interface
 
 from certbot import errors
@@ -99,25 +100,25 @@ class _RFC2136Client(object):
         })
         self.algorithm = key_algorithm
 
-    def add_txt_record(self, record_name, record_content, record_ttl):
-        """
-        Add a TXT record using the supplied information.
-
-        :param str record_name: The record name (typically beginning with '_acme-challenge.').
-        :param str record_content: The record content (typically the challenge validation).
-        :param int record_ttl: The record TTL (number of seconds that the record may be cached).
-        :raises certbot.errors.PluginError: if an error occurs communicating with the DNS server
-        """
-
+    def cname_check1(record_name, quiet=false):
+    """
+    Cons:
+    
+    """
         # If there is any CNAME involved we want to perform the dynamic update of
         # the TXT RR using the zone the CNAME points to
         # Don't let any failure in this section stop us, this is optional
-        logger.info("Checking if %s is a CNAME...", record_name)
+        if quiet:
+          log = lambda *args, **kwargs: None
+        else:
+          log = logger.info
+
+        log("Checking if %s is a CNAME...", record_name)
         q = dns.message.make_query(record_name, dns.rdatatype.TXT, dns.rdataclass.IN)
         try:
             response = dns.query.tcp(q, self.server, port=self.port)
         except Exception as e:
-            logger.info("Exception %s during CNAME query, trying to continue asssuming no CNAME",
+             log("Exception %s during CNAME query, trying to continue asssuming no CNAME",
                         str(type(e)))
         try:
             rcode = response.rcode()
@@ -129,20 +130,59 @@ class _RFC2136Client(object):
                         continue
                     cname = answer.items[0].target.to_text()
                 if cname is not None:
-                    logger.info("... %s -> %s", record_name, cname)
-                    record_name = cname
+                    log("... %s -> %s", record_name, cname)
+                    return cname
                 else:
-                    logger.info("... not a CNAME")
+                    log("... not a CNAME")
             else:
-                logger.info("CNAME query returned %s, continuing assuming no CNAME",
+                log("CNAME query returned %s, continuing assuming no CNAME",
                             dns.rcode.to_text(rcode))
         except Exception as e:
-            logger.info("Exception %s parsing CNAME check, continuing asssuming no CNAME",
+            log("Exception %s parsing CNAME check, continuing asssuming no CNAME",
                         str(type(e)))
-            logger.info('debug: {0}'.format(e))
+            log('debug: {0}'.format(e))
 
+        return record_name
 
-        domain = self._find_domain(record_name)
+    def cname_check2(record_name, quiet=false):
+    """
+    <Desc TODO>
+    
+    Cons:
+    - Ignores the nameserver configured (self.server + self.port) and uses the system-wide settings
+    - Caching nameservers can break this approach because they may not return the CNAME info when the
+    result is taken from cache.
+    - Need to add import of dns.resolver
+    Pros:
+    - Can follow CNAMEs that traverse different DNS servers
+    - Concise
+
+    """
+      out = None
+      try:
+        answers = dns.resolver.query(record_name, 'TXT')
+      except dns.resolver.NXDOMAIN as e:
+        out = e.canonical_name.to_text()
+      except Exception as e:
+        out = record_name
+      out = answers.canonical_name.to_text()
+      if not quiet:
+        logger.info("CNAME check: %s -> %s", record_name, out)
+      return out
+
+    def add_txt_record(self, record_name, record_content, record_ttl):
+        """
+        Add a TXT record using the supplied information.
+
+        :param str record_name: The record name (typically beginning with '_acme-challenge.').
+        :param str record_content: The record content (typically the challenge validation).
+        :param int record_ttl: The record TTL (number of seconds that the record may be cached).
+        :raises certbot.errors.PluginError: if an error occurs communicating with the DNS server
+        """
+
+        record_name = self.cname_check1(record_name)
+
+        domain = self._find_domain(record_name, quiet=false)
 
         n = dns.name.from_text(record_name)
         o = dns.name.from_text(domain)
@@ -176,35 +216,8 @@ class _RFC2136Client(object):
         :param int record_ttl: The record TTL (number of seconds that the record may be cached).
         :raises certbot.errors.PluginError: if an error occurs communicating with the DNS server
         """
-        # If there is any CNAME involved we want to perform the dynamic update of
-        # the TXT RR using the zone the CNAME points to
-        # Don't let any failure in this section stop us, this is optional
-        q = dns.message.make_query(record_name, dns.rdatatype.TXT, dns.rdataclass.IN)
-        try:
-            response = dns.query.tcp(q, self.server, port=self.port)
-        except Exception as e:
-            logger.info("Exception %s during CNAME query, trying to continue asssuming no CNAME",
-                        str(type(e)))
-        try:
-            rcode = response.rcode()
-            if rcode == dns.rcode.NOERROR or rcode == dns.rcode.NXDOMAIN:
-                cname = None
-                for answer in response.answer:
-                    if (answer.rdtype != dns.rdatatype.CNAME
-                        or answer.rdclass != dns.rdataclass.IN):
-                        continue
-                    cname = answer.items[0].target.to_text()
-                if cname is not None:
-                    record_name = cname
-                else:
-                    pass
-            else:
-                logger.info("CNAME query returned %s, continuing assuming no CNAME",
-                            dns.rcode.to_text(rcode))
-        except Exception as e:
-            logger.info("Exception %s parsing CNAME check, continuing asssuming no CNAME",
-                        str(type(e)))
-            logger.info('debug: {0}'.format(e))
+
+        record_name = self.cname_check1(record_name, quiet=true)
 
         domain = self._find_domain(record_name)
 
